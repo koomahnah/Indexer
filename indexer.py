@@ -49,6 +49,7 @@ def serialize_to_json(data, file_path):
 
 def deserialize_from_json(file_path):
     path = Path(file_path)
+    out = None
 
     # Check if the file exists before attempting to read
     if not path.exists():
@@ -56,8 +57,20 @@ def deserialize_from_json(file_path):
         return None
 
     # Read the JSON file and return the dictionary
-    with path.open('r') as file:
-        return json.load(file)
+    try:
+        with path.open('r') as file:
+            out = json.load(file)
+    except Exception as e:
+        print("Can't open the file: {e}")
+        return None
+    
+    if isinstance(out, dict):
+        # This is an Indexer index, return it
+        return out
+    elif isinstance(out, list):
+        return b2_listing_to_index(out)
+    else:
+        raise Exception("Unsupported format")
 
 DEBUG = True
 
@@ -165,6 +178,14 @@ def strip_removal(current, old):
     removals = {}
     for sha in old:
         if sha not in current:
+            # It may be an actual removal, but something else is also possible.
+            # Consider input:
+            # old: [sha1 -> f1, f2]
+            # current [sha1 -> f1]
+            # Over strip_unchanges, it becomes:
+            # old: [sha1 -> f2]
+            # current []
+            # It's a "removal" but of a duplicate. 
             for path in old[sha]:
                 if sha in removals:
                     removals[sha].append(path)
@@ -284,14 +305,23 @@ def strip(current, old, debug=False):
 
 def compare(current, old):
     change_descr = strip(current, old)
-    for path in change_descr.content_changes:
-        print(f"File {path} changed its contents.")
     for sha in change_descr.moves:
         for old_path, new_path in change_descr.moves[sha]:
             print(f"File {old_path} moved to {new_path}.")
+    for path in change_descr.content_changes:
+        print(f"File {path} changed its contents.")
     for sha in change_descr.removals:
         for path in change_descr.removals[sha]:
-            print(f"File {path} was in the index, but is now missing.")
+            # This path is gone. However, it may be either a duplicate removed, or an actual removal.
+            if sha in current:
+                # Duplicate was removed
+                if len(current[sha]) == 1:
+                    print(f"Duplicated file {path} was removed. Its copy exists at {current[sha][0]}")
+                else:
+                    copies = ", ".join(current[sha])
+                    print(f"Duplicated file {path} was removed. Its copies exist at {copies}")
+            else:
+                print(f"File {path} was removed.")
     for sha in change_descr.new:
         for path in change_descr.new[sha]:
             print(f"File {path} is new.")
@@ -300,80 +330,114 @@ def compare(current, old):
         newpaths = change_descr.copies[sha][1]
         for path in newpaths:
             print(f"File {oldpath} was copied to {path}.")
+    return change_descr
 
-# def compare(current, old):
-#     current_paths_to_sha = {}
-#     for sha in current:
-#         for path in current[sha]:
-#             current_paths_to_sha[path] = sha
-#     old_paths_to_sha = {}
-#     for sha in old:
-#         for path in old[sha]:
-#             old_paths_to_sha[path] = sha
-# 
-#     debug_print("Iterating through old index.")
-#     for sha in old:
-#         debug_print(f"Found old SHA {sha} with {len(old[sha])} filepaths")
-#         if sha in current:
-#             for path in old[sha]:
-#                 if path not in current[sha] and path not in current_paths_to_sha:
-#                     print(f"File {path} was in the index, but is now missing.")
-#                 elif path not in current[sha] and path in current_paths_to_sha:
-#                     print(f"File {path} changed its contents.")
-#         else:
-#             for path in old[sha]:
-#                 if path in current_paths_to_sha:
-#                     print(f"File {path} changed its contents.")
-#                 else:
-#                     print(f"File {path} was in the index, but is now missing.")
-#     
-#     for sha in current:
-#         debug_print(f"Found current SHA {sha} with {len(current[sha])} filepaths")
-#         if sha in old:
-#             if len(old[sha]) == len(current[sha]) and len(old[sha]) == 1:
-#                 # One path for SHA in both current and new. Is it the same?
-#                 if old[sha] != current[sha]:
-#                     print(f"File {old[sha]} moved to {current[sha]}.")
-#             elif old[sha].sort() == current[sha].sort():
-#                 # More paths with the same SHA, but all duplicates stay where they were.
-#                 pass
-#             else:
-#                 # Many paths with the same SHA. Current index is different than old.
-#                 # Example:
-#                 # old
-#                 #   f1.txt a39a3ee5e6
-#                 #   f2.txt a39a3ee5e6
-#                 #   f3.txt d9310ab13e
-#                 # new
-#                 #   d1/f1.txt a39a3ee5e6
-#                 #   d1/f2.txt a39a3ee5e6
-#                 #   f3.txt d9310ab13e
-#                 #   f4.txt a39a3ee5e6
-#                 print(f"Duplicated file at paths {old[sha].sort()} is now at {current[sha].sort()}")
-#         else:
-#             # This is a new SHA. Either it's a new file, or it changed its contents.
-#             for path in current[sha]:
-#                 if path not in old_paths_to_sha:
-#                     print(f"File {path} is new.")
+"""
+B2 listing:
+[
+{
+    "accountId": "632adbf08ef2",
+    "action": "upload",
+    "bucketId": "7623d20a9d2b0f90982e0f12",
+    "contentMd5": "7941d80b9f9c2b40085dac94dc9ac570",
+    "contentSha1": "6e63ed5da11cbe15588154a1148a866d3a4766ba",
+    "contentType": "application/octet-stream",
+    "fileId": "4_z7623d20a9d2b0f90982e0f12_f11301ed4954d7d4c_d20240919_m093201_c004_v0402027_t0037_u01726738321715",
+    "fileInfo": {
+        "src_last_modified_millis": "1726670499677"
+    },
+    "fileName": ".rcloneignore",
+    "fileRetention": {
+        "mode": null,
+        "retainUntilTimestamp": null
+    },
+    "legalHold": null,
+    "replicationStatus": null,
+    "serverSideEncryption": {
+        "mode": "none"
+    },
+    "size": 107,
+    "uploadTimestamp": 1726738321715
+}, ...]
+Index:
+{
+    "f39cfff4d9da667b48d2ab66274f0b5e1e8cfe92": [
+        "file3"
+    ],
+    "7fe70820e08a1aac0ef224d9c66ab66831cc4ab1": [
+        "file2",
+        "file1"
+    ],
+"""
+def b2_listing_to_index(b2_listing):
+    index = {}
+    print(f"Converting b2 listing to an index...")
+    count = 0
+    for file in b2_listing:
+        if "contentSha1" not in file:
+            print("No contentSha1 in b2 listing:")
+            print(file)
+            continue
+        if "fileName" not in file:
+            print("No contentSha1 in b2 listing:")
+            print(file)
+            continue
+        sha = file["contentSha1"]
+        if sha == "none":
+            try:
+                sha = file["fileInfo"]["large_file_sha1"]
+            except Exception as e:
+                print(f"Failed to read SHA1 for {file['fileName']}: {e}")
+                continue
+        path = file["fileName"]
+        if sha in index:
+            index[sha].append(path)
+        else:
+            index[sha] = [path]
+        count += 1
+    print(f"Done, {count} entries added.")
+    return index
 
+
+global_current = None
+global_old = None
+change_descr = None
 def main():
     parser = argparse.ArgumentParser(description="Indexing your files, and validating if you've lost anything.")
-    
-    parser.add_argument("operation", choices=["index", "validate"],
-                        help="Operation to perform: index")
-    
-    parser.add_argument("directory", type=str, help="Directory to index/validate")
-    
+    subparsers = parser.add_subparsers(dest="operation", required=True, help="Operation to perform")
+
+    # Subparser for the 'index' command
+    index_parser = subparsers.add_parser("index", help="Index the files in the directory")
+    index_parser.add_argument("directory", type=str, help="Directory to index")
+
+    # Subparser for the 'validate' command
+    validate_parser = subparsers.add_parser("validate", help="Validate the files in the directory")
+    validate_parser.add_argument("directory", type=str, help="Directory to validate")
+    validate_parser.add_argument("--target", type=str, 
+                                    help="Use provided target index instead of creating one on the fly. Accepted: B2 listing, Indexer index")
+    validate_parser.add_argument("--baseline", type=str, 
+                                    help="Use provided baseline index instead of reading from .index. Accepted: B2 listing, Indexer index")
+
     args = parser.parse_args()
-    
+
     # Perform the operation
     if args.operation == "index":
         d = index(args.directory)
         serialize_to_json(d, args.directory + "/.index")
     elif args.operation =="validate":
-        current = index(args.directory)
-        old = deserialize_from_json(args.directory + "/.index")
-        compare(current, old)
+        if args.target:
+            current = deserialize_from_json(args.target)
+        else:
+            current = index(args.directory)
+        if args.baseline:
+            old = deserialize_from_json(args.baseline)
+        else:
+            old = deserialize_from_json(args.directory + "/.index")
+        global_current = current.copy()
+        global_old = old.copy()
+        print(len(current))
+        print(len(global_current))
+        change_descr = compare(current, old)
 
 
 if __name__ == "__main__":
