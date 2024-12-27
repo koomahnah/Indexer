@@ -18,12 +18,17 @@ def sha1sum(file_path):
         return None
     return sha1.hexdigest()
 
-def index(dir):
+def index(dir, old_reversed, old_timestamps):
     path = Path(dir)
     dict = {}
     for file_path in path.rglob('*'):  # '*' matches all files and directories
         if file_path.is_file():
-            checksum = sha1sum(file_path)
+            current_mod_time = file_path.stat().st_mtime
+            if old_timestamps and old_reversed and str(file_path) in old_timestamps and current_mod_time == old_timestamps[str(file_path)]:
+                checksum = old_reversed[str(file_path)]
+            else:
+                checksum = sha1sum(file_path)
+
             if checksum is None:
                 continue
             if checksum in dict:
@@ -31,6 +36,23 @@ def index(dir):
             else:
                 dict[checksum] = [str(file_path)]
     return dict
+
+# Path -> sha
+def reverse_index(index):
+    reverse = {}
+    for sha in index:
+        for path in index[sha]:
+            reverse[path] = sha
+    return reverse
+
+def stamp_times(reverse_index):
+    timestamps = {}
+    for path in reverse_index:
+        path2 = Path(path)
+        current_mod_time = path2.stat().st_mtime
+        timestamps[path] = current_mod_time
+    return timestamps
+
 
 def serialize_to_json(data, file_path, prompt=True):
     path = Path(file_path)
@@ -100,10 +122,7 @@ def strip_content_changes(current, old):
     current_stripped = {}
     # Dict of path -> [old sha, new sha]
     content_changes = {}
-    current_paths_to_sha = {}
-    for sha in current:
-        for path in current[sha]:
-            current_paths_to_sha[path] = sha
+    current_paths_to_sha = reverse_index(current)
     for sha in old:
         for path in old[sha]:
             if path in current_paths_to_sha and sha != current_paths_to_sha[path]:
@@ -136,10 +155,7 @@ def strip_moves(current, old):
     skiplist_old = {}
     # Helper dict of sha -> [newpath1, newpath2...]
     skiplist_current = {}
-    current_paths_to_sha = {}
-    for sha in current:
-        for path in current[sha]:
-            current_paths_to_sha[path] = sha
+    current_paths_to_sha = reverse_index(current)
     for sha in old:
         if sha in current:
             for i in range(min(len(old[sha]), len(current[sha]))):
@@ -399,8 +415,6 @@ def b2_listing_to_index(b2_listing):
     return index
 
 
-global_current = None
-global_old = None
 change_descr = None
 def main():
     parser = argparse.ArgumentParser(description="Indexing your files, and validating if you've lost anything.")
@@ -424,21 +438,25 @@ def main():
 
     # Perform the operation
     if args.operation == "index":
-        d = index(args.directory)
+        d = index(args.directory, None, None)
+        r = reverse_index(d)
+        t = stamp_times(r)
         serialize_to_json(d, args.directory + "/.index")
+        serialize_to_json(r, args.directory + "/.index" + "_reversed")
+        serialize_to_json(t, args.directory + "/.index" + "_timestamps")
     elif args.operation =="validate":
+        if args.baseline:
+            old = deserialize_from_json(args.baseline)
+            old_reversed = deserialize_from_json(args.baseline + "_reversed")
+            old_timestamps = deserialize_from_json(args.baseline + "_timestamps")
+        else:
+            old = deserialize_from_json(args.directory + "/.index")
+            old_reversed = deserialize_from_json(args.directory + "/.index" + "_reversed")
+            old_timestamps = deserialize_from_json(args.directory + "/.index" + "_timestamps")
         if args.target:
             current = deserialize_from_json(args.target)
         else:
-            current = index(args.directory)
-        if args.baseline:
-            old = deserialize_from_json(args.baseline)
-        else:
-            old = deserialize_from_json(args.directory + "/.index")
-        global_current = current.copy()
-        global_old = old.copy()
-        print(len(current))
-        print(len(global_current))
+            current = index(args.directory, old_reversed, old_timestamps)
         change_descr = compare(current, old)
         if not args.target and not args.script:
             print("Overwrite old index? [y/N] ", end='')
