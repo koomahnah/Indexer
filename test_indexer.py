@@ -226,7 +226,7 @@ class TestContentChange(unittest.TestCase):
         file1.write_text("hhhhello world")
 
         result = subprocess.run(
-            ["python3", "indexer.py", "validate", str(self.temp_dir_path)],
+            ["python3", "indexer.py", "validate", str(self.temp_dir_path), "--script"],
             capture_output=True, text=True
         )
 
@@ -275,7 +275,7 @@ class TestDuplicateRemoval(unittest.TestCase):
         file4.unlink()
 
         result = subprocess.run(
-            ["python3", "indexer.py", "validate", str(self.temp_dir_path)],
+            ["python3", "indexer.py", "validate", str(self.temp_dir_path), "--script"],
             capture_output=True, text=True
         )
 
@@ -318,7 +318,7 @@ class TestContentAndRemoveNestedDirs(unittest.TestCase):
         file4.write_text("t")
 
         result = subprocess.run(
-            ["python3", "indexer.py", "validate", str(self.temp_dir_path)],
+            ["python3", "indexer.py", "validate", str(self.temp_dir_path), "--script"],
             capture_output=True, text=True
         )
 
@@ -382,7 +382,7 @@ class TestContentAndRemoveNestedDirsLarge(unittest.TestCase):
             file.write_text("overwritten")
 
         result = subprocess.run(
-            ["python3", "indexer.py", "validate", str(self.temp_dir_path)],
+            ["python3", "indexer.py", "validate", str(self.temp_dir_path), "--script"],
             capture_output=True, text=True
         )
 

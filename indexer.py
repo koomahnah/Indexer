@@ -32,11 +32,11 @@ def index(dir):
                 dict[checksum] = [str(file_path)]
     return dict
 
-def serialize_to_json(data, file_path):
+def serialize_to_json(data, file_path, prompt=True):
     path = Path(file_path)
 
     # Check if the file exists
-    if path.exists():
+    if path.exists() and prompt:
         confirm = input(f"File {file_path} already exists. Overwrite? (y/n): ")
         if confirm.lower() != 'y':
             print("Operation cancelled.")
@@ -45,7 +45,7 @@ def serialize_to_json(data, file_path):
     # Write the dictionary to a JSON file
     with path.open('w') as file:
         json.dump(data, file, indent=4)
-        print(f"Index successfully written to {file_path}")
+        print(f"Index successfully written to {file_path}.")
 
 def deserialize_from_json(file_path):
     path = Path(file_path)
@@ -417,6 +417,8 @@ def main():
                                     help="Use provided target index instead of creating one on the fly. Accepted: B2 listing, Indexer index")
     validate_parser.add_argument("--baseline", type=str, 
                                     help="Use provided baseline index instead of reading from .index. Accepted: B2 listing, Indexer index")
+    validate_parser.add_argument("--script", action='store_true',
+                                    help="Never prompt y/n and go with default. Useful for scripts.")
 
     args = parser.parse_args()
 
@@ -438,6 +440,13 @@ def main():
         print(len(current))
         print(len(global_current))
         change_descr = compare(current, old)
+        if not args.target and not args.script:
+            print("Overwrite old index? [y/N] ", end='')
+            choice = input().lower()
+            if choice == "y":
+                serialize_to_json(current, args.directory + "/.index", prompt=False)
+            else:
+                print("Ok, not doing anything.")
 
 
 if __name__ == "__main__":
