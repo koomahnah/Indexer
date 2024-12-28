@@ -414,6 +414,10 @@ def b2_listing_to_index(b2_listing):
     print(f"Done, {count} entries added.")
     return index
 
+def list_duplicates(current):
+    for sha in current:
+        if len(current[sha]) > 1:
+            print(f"Duplicates: {', '.join(current[sha])}")
 
 change_descr = None
 def main():
@@ -423,6 +427,10 @@ def main():
     # Subparser for the 'index' command
     index_parser = subparsers.add_parser("index", help="Index the files in the directory")
     index_parser.add_argument("directory", type=str, help="Directory to index")
+
+    # Subparser for the 'duplicate-info'
+    index_parser = subparsers.add_parser("duplicate-info", help="List info about duplicates in current tree")
+    index_parser.add_argument("directory", type=str, help="Directory to list duplicates in")
 
     # Subparser for the 'validate' command
     validate_parser = subparsers.add_parser("validate", help="Validate the files in the directory")
@@ -465,6 +473,11 @@ def main():
                 serialize_to_json(current, args.directory + "/.index", prompt=False)
             else:
                 print("Ok, not doing anything.")
+    elif args.operation == "duplicate-info":
+        old_reversed = deserialize_from_json(args.directory + "_reversed")
+        old_timestamps = deserialize_from_json(args.directory + "_timestamps")
+        current = index(args.directory, old_reversed, old_timestamps)
+        list_duplicates(current)
 
 
 if __name__ == "__main__":
