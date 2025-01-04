@@ -2,7 +2,16 @@
 import argparse
 from pathlib import Path
 import hashlib
+import numpy
+import imagehash
+from PIL import Image
 import json
+
+def is_image(filename):
+    f = str(filename).lower()
+    return f.endswith('.png') or f.endswith('.jpg') or \
+        f.endswith('.jpeg') or f.endswith('.bmp') or \
+        f.endswith('.gif') or f.endswith('.svg')
 
 def sha1sum(file_path):
     sha1 = hashlib.sha1()
@@ -18,7 +27,38 @@ def sha1sum(file_path):
         return None
     return sha1.hexdigest()
 
-def index(dir, old_reversed, old_timestamps):
+def ddhash(image, hash_size=8):
+	# type: (Image.Image, int) -> ImageHash
+	# resize(w, h), but numpy.array((h, w))
+	if hash_size < 2:
+		raise ValueError('Hash size must be greater than or equal to 2')
+
+    # BILINEAR & 6 bits is pretty ok
+	image = image.convert('L').resize((hash_size + 1, hash_size), Image.Resampling.HAMMING)
+	pixels = numpy.asarray(image)
+	# compute differences between columns
+	diff = pixels[:, 1:] > pixels[:, :-1]
+	return imagehash.ImageHash(diff)
+ 
+"""
+This function intends to hash files such that hashing is immune to multiples
+of 90 degree rotation. Ie. you rotate the file 90deg or more, hash stays the same.
+It could be done by computing 4 hashes: 0deg, 90deg, ... 270deg and sorting. But two
+hashings will be enough supposing we always start from the vertical orientation.
+"""
+def dhash(file_path):
+    f = Image.open(file_path)
+    rotation = 0
+    hashes = [0, 0]
+    if f.width > f.height:
+        # Always rotate to vertical
+        rotation = 90
+    hashes[0] = str(ddhash(f.rotate(rotation, expand=True), hash_size=5))
+    hashes[1] = str(ddhash(f.rotate(rotation + 180, expand=True), hash_size=5))
+    hashes.sort()
+    return "".join(hashes)
+
+def index(dir, old_reversed, old_timestamps, image_mode):
     path = Path(dir)
     dict = {}
     for file_path in path.rglob('*'):  # '*' matches all files and directories
@@ -27,7 +67,14 @@ def index(dir, old_reversed, old_timestamps):
             if old_timestamps and old_reversed and str(file_path) in old_timestamps and current_mod_time == old_timestamps[str(file_path)]:
                 checksum = old_reversed[str(file_path)]
             else:
-                checksum = sha1sum(file_path)
+                if image_mode and is_image(file_path):
+                    try:
+                        checksum = dhash(file_path)
+                    except Exception as e:
+                        print(f"Failed to compute image hash for {file_path}: {e}. \n Falling back to SHA.")
+                        checksum = sha1sum(file_path)
+                else:
+                    checksum = sha1sum(file_path)
 
             if checksum is None:
                 continue
@@ -67,7 +114,7 @@ def serialize_to_json(data, file_path, prompt=True):
     # Write the dictionary to a JSON file
     with path.open('w') as file:
         json.dump(data, file, indent=4)
-        print(f"Index successfully written to {file_path}.")
+        print(f"INFO: Index successfully written to {file_path}.")
 
 def deserialize_from_json(file_path):
     path = Path(file_path)
@@ -93,6 +140,27 @@ def deserialize_from_json(file_path):
         return b2_listing_to_index(out)
     else:
         raise Exception("Unsupported format")
+
+def serialize_all(index, reverse_index, timestamp_index, dir, image_mode, prompt=True):
+    sufix = ""
+    if image_mode:
+        sufix = "_dhash"
+    if index:
+        serialize_to_json(index, dir + "/.index" + sufix, prompt)
+    if reverse_index:
+        serialize_to_json(reverse_index, dir + "/.index_reversed" + sufix, prompt)
+    if timestamp_index:
+        serialize_to_json(timestamp_index, dir + "/.index_timestamps" + sufix, prompt)
+
+def deserialize_all(dir, image_mode):
+    sufix = ""
+    if image_mode:
+        sufix = "_dhash"
+    index = deserialize_from_json(dir + "/.index" + sufix)
+    reverse_index = deserialize_from_json(dir + "/.index_reversed" + sufix)
+    timestamp_index = deserialize_from_json(dir + "/.index_timestamps" + sufix)
+    return index, reverse_index, timestamp_index
+
 
 DEBUG = True
 
@@ -427,10 +495,14 @@ def main():
     # Subparser for the 'index' command
     index_parser = subparsers.add_parser("index", help="Index the files in the directory")
     index_parser.add_argument("directory", type=str, help="Directory to index")
+    index_parser.add_argument("--image-mode", action='store_true',
+                                    help="Use hashing dedicated for images. This treats similar images as same files.")
 
     # Subparser for the 'duplicate-info'
-    index_parser = subparsers.add_parser("duplicate-info", help="List info about duplicates in current tree")
-    index_parser.add_argument("directory", type=str, help="Directory to list duplicates in")
+    duplicate_parser = subparsers.add_parser("duplicate-info", help="List info about duplicates in current tree")
+    duplicate_parser.add_argument("directory", type=str, help="Directory to list duplicates in")
+    duplicate_parser.add_argument("--image-mode", action='store_true',
+                                    help="Use hashing dedicated for images. This treats similar images as same files.")
 
     # Subparser for the 'validate' command
     validate_parser = subparsers.add_parser("validate", help="Validate the files in the directory")
@@ -441,42 +513,48 @@ def main():
                                     help="Use provided baseline index instead of reading from .index. Accepted: B2 listing, Indexer index")
     validate_parser.add_argument("--script", action='store_true',
                                     help="Never prompt y/n and go with default. Useful for scripts.")
+    validate_parser.add_argument("--image-mode", action='store_true',
+                                    help="Use hashing dedicated for images. This treats similar images as same files.")
 
     args = parser.parse_args()
 
     # Perform the operation
     if args.operation == "index":
-        d = index(args.directory, None, None)
+        d = index(args.directory, None, None, args.image_mode)
         r = reverse_index(d)
         t = stamp_times(r)
-        serialize_to_json(d, args.directory + "/.index")
-        serialize_to_json(r, args.directory + "/.index" + "_reversed")
-        serialize_to_json(t, args.directory + "/.index" + "_timestamps")
+        serialize_all(d, r, t, args.directory, args.image_mode)
     elif args.operation =="validate":
         if args.baseline:
             old = deserialize_from_json(args.baseline)
             old_reversed = deserialize_from_json(args.baseline + "_reversed")
             old_timestamps = deserialize_from_json(args.baseline + "_timestamps")
         else:
-            old = deserialize_from_json(args.directory + "/.index")
-            old_reversed = deserialize_from_json(args.directory + "/.index" + "_reversed")
-            old_timestamps = deserialize_from_json(args.directory + "/.index" + "_timestamps")
+            old, old_reversed, old_timestamps = deserialize_all(args.directory, args.image_mode);
         if args.target:
             current = deserialize_from_json(args.target)
         else:
-            current = index(args.directory, old_reversed, old_timestamps)
+            current = index(args.directory, old_reversed, old_timestamps, args.image_mode)
         change_descr = compare(current, old)
         if not args.target and not args.script:
             print("Overwrite old index? [y/N] ", end='')
             choice = input().lower()
             if choice == "y":
-                serialize_to_json(current, args.directory + "/.index", prompt=False)
+                serialize_all(current, old_reversed, old_timestamps, args.directory, args.image_mode, prompt=False)
             else:
                 print("Ok, not doing anything.")
     elif args.operation == "duplicate-info":
-        old_reversed = deserialize_from_json(args.directory + "_reversed")
-        old_timestamps = deserialize_from_json(args.directory + "_timestamps")
-        current = index(args.directory, old_reversed, old_timestamps)
+        old_reversed = deserialize_from_json(args.directory + "/.index_reversed")
+        old_timestamps = deserialize_from_json(args.directory + "/.index_timestamps")
+        if old_reversed:
+            print(f"INFO: Loaded reverse index with {len(old_reversed)} entries.")
+        else:
+            print("INFO: Reverse index missing.")
+        if old_timestamps:
+            print(f"INFO: Loaded timestamps index with {len(old_timestamps)} entries.")
+        else:
+            print("INFO: timestamps index missing.")
+        current = index(args.directory, old_reversed, old_timestamps, args.image_mode)
         list_duplicates(current)
 
 
