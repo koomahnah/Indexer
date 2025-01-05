@@ -34,6 +34,7 @@ def ddhash(image, hash_size=8):
 		raise ValueError('Hash size must be greater than or equal to 2')
 
     # BILINEAR & 6 bits is pretty ok
+    # HAMMING & 5 bits is perfect in the limited dataset
 	image = image.convert('L').resize((hash_size + 1, hash_size), Image.Resampling.HAMMING)
 	pixels = numpy.asarray(image)
 	# compute differences between columns
@@ -58,10 +59,14 @@ def dhash(file_path):
     hashes.sort()
     return "".join(hashes)
 
-def index(dir, old_reversed, old_timestamps, image_mode):
+def index(dir, old_reversed, old_timestamps, image_mode, ignore_dir):
     path = Path(dir)
+    if ignore_dir:
+        ignore_dir = Path(ignore_dir)
     dict = {}
     for file_path in path.rglob('*'):  # '*' matches all files and directories
+        if ignore_dir and file_path.resolve().is_relative_to(ignore_dir.resolve()):
+            continue
         if file_path.is_file():
             current_mod_time = file_path.stat().st_mtime
             if old_timestamps and old_reversed and str(file_path) in old_timestamps and current_mod_time == old_timestamps[str(file_path)]:
@@ -497,12 +502,16 @@ def main():
     index_parser.add_argument("directory", type=str, help="Directory to index")
     index_parser.add_argument("--image-mode", action='store_true',
                                     help="Use hashing dedicated for images. This treats similar images as same files.")
+    index_parser.add_argument("--ignore-dir", type=str, 
+                                    help="Ignore the specified directory while indexing")
 
     # Subparser for the 'duplicate-info'
     duplicate_parser = subparsers.add_parser("duplicate-info", help="List info about duplicates in current tree")
     duplicate_parser.add_argument("directory", type=str, help="Directory to list duplicates in")
     duplicate_parser.add_argument("--image-mode", action='store_true',
                                     help="Use hashing dedicated for images. This treats similar images as same files.")
+    duplicate_parser.add_argument("--ignore-dir", type=str, 
+                                    help="Ignore the specified directory while indexing")
 
     # Subparser for the 'validate' command
     validate_parser = subparsers.add_parser("validate", help="Validate the files in the directory")
@@ -511,6 +520,8 @@ def main():
                                     help="Use provided target index instead of creating one on the fly. Accepted: B2 listing, Indexer index")
     validate_parser.add_argument("--baseline", type=str, 
                                     help="Use provided baseline index instead of reading from .index. Accepted: B2 listing, Indexer index")
+    validate_parser.add_argument("--ignore-dir", type=str, 
+                                    help="Ignore the specified directory while indexing")
     validate_parser.add_argument("--script", action='store_true',
                                     help="Never prompt y/n and go with default. Useful for scripts.")
     validate_parser.add_argument("--image-mode", action='store_true',
@@ -520,7 +531,7 @@ def main():
 
     # Perform the operation
     if args.operation == "index":
-        d = index(args.directory, None, None, args.image_mode)
+        d = index(args.directory, None, None, args.image_mode, args.ignore_dir)
         r = reverse_index(d)
         t = stamp_times(r)
         serialize_all(d, r, t, args.directory, args.image_mode)
@@ -534,7 +545,7 @@ def main():
         if args.target:
             current = deserialize_from_json(args.target)
         else:
-            current = index(args.directory, old_reversed, old_timestamps, args.image_mode)
+            current = index(args.directory, old_reversed, old_timestamps, args.image_mode, args.ignore_dir)
         change_descr = compare(current, old)
         if not args.target and not args.script:
             print("Overwrite old index? [y/N] ", end='')
@@ -554,7 +565,7 @@ def main():
             print(f"INFO: Loaded timestamps index with {len(old_timestamps)} entries.")
         else:
             print("INFO: timestamps index missing.")
-        current = index(args.directory, old_reversed, old_timestamps, args.image_mode)
+        current = index(args.directory, old_reversed, old_timestamps, args.image_mode, args.ignore_dir)
         list_duplicates(current)
 
 
