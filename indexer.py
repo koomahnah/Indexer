@@ -62,11 +62,19 @@ def dhash(file_path):
 def index(dir, old_reversed, old_timestamps, image_mode, ignore_dir):
     path = Path(dir)
     if ignore_dir:
-        ignore_dir = Path(ignore_dir)
+        print(ignore_dir)
+        ignore_dir = [Path(dir[0]) for dir in ignore_dir]
+        print(ignore_dir)
     dict = {}
     for file_path in path.rglob('*'):  # '*' matches all files and directories
-        if ignore_dir and file_path.resolve().is_relative_to(ignore_dir.resolve()):
-            continue
+        if ignore_dir:
+            skip = False
+            for dir in ignore_dir:
+                if file_path.resolve().is_relative_to(dir.resolve()):
+                    skip = True
+                    break
+            if skip:
+                continue
         if file_path.is_file():
             current_mod_time = file_path.stat().st_mtime
             if old_timestamps and old_reversed and str(file_path) in old_timestamps and current_mod_time == old_timestamps[str(file_path)]:
@@ -487,10 +495,16 @@ def b2_listing_to_index(b2_listing):
     print(f"Done, {count} entries added.")
     return index
 
-def list_duplicates(current):
+def list_duplicates(current, print_as_array):
+    duplicates = []
     for sha in current:
         if len(current[sha]) > 1:
-            print(f"Duplicates: {', '.join(current[sha])}")
+            if print_as_array:
+                duplicates.append(current[sha])
+            else:
+                print(f"Duplicates: {', '.join(current[sha])}")
+    if print_as_array:
+        print(duplicates)
 
 change_descr = None
 def main():
@@ -502,7 +516,7 @@ def main():
     index_parser.add_argument("directory", type=str, help="Directory to index")
     index_parser.add_argument("--image-mode", action='store_true',
                                     help="Use hashing dedicated for images. This treats similar images as same files.")
-    index_parser.add_argument("--ignore-dir", type=str, 
+    index_parser.add_argument("--ignore-dir", type=str, action='append', nargs='*',
                                     help="Ignore the specified directory while indexing")
 
     # Subparser for the 'duplicate-info'
@@ -510,7 +524,9 @@ def main():
     duplicate_parser.add_argument("directory", type=str, help="Directory to list duplicates in")
     duplicate_parser.add_argument("--image-mode", action='store_true',
                                     help="Use hashing dedicated for images. This treats similar images as same files.")
-    duplicate_parser.add_argument("--ignore-dir", type=str, 
+    duplicate_parser.add_argument("--print-as-array", action='store_true',
+                                    help="Print in the format of Python array. Easy to process further.")
+    duplicate_parser.add_argument("--ignore-dir", type=str, action='append', nargs='*',
                                     help="Ignore the specified directory while indexing")
 
     # Subparser for the 'validate' command
@@ -520,7 +536,7 @@ def main():
                                     help="Use provided target index instead of creating one on the fly. Accepted: B2 listing, Indexer index")
     validate_parser.add_argument("--baseline", type=str, 
                                     help="Use provided baseline index instead of reading from .index. Accepted: B2 listing, Indexer index")
-    validate_parser.add_argument("--ignore-dir", type=str, 
+    validate_parser.add_argument("--ignore-dir", type=str, action='append', nargs='*',
                                     help="Ignore the specified directory while indexing")
     validate_parser.add_argument("--script", action='store_true',
                                     help="Never prompt y/n and go with default. Useful for scripts.")
@@ -571,7 +587,7 @@ def main():
         else:
             print("INFO: timestamps index missing.")
         current = index(args.directory, old_reversed, old_timestamps, args.image_mode, args.ignore_dir)
-        list_duplicates(current)
+        list_duplicates(current, args.print_as_array)
 
 
 if __name__ == "__main__":
