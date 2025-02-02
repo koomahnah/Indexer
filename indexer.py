@@ -526,6 +526,8 @@ def main():
                                     help="Never prompt y/n and go with default. Useful for scripts.")
     validate_parser.add_argument("--image-mode", action='store_true',
                                     help="Use hashing dedicated for images. This treats similar images as same files.")
+    validate_parser.add_argument("--checksum", action='store_true',
+                                    help="Always do checksum, don't rely on modification times.")
 
     args = parser.parse_args()
 
@@ -545,6 +547,9 @@ def main():
         if args.target:
             current = deserialize_from_json(args.target)
         else:
+            if args.checksum:
+                old_reversed = None
+                old_timestamps = None
             current = index(args.directory, old_reversed, old_timestamps, args.image_mode, args.ignore_dir)
         change_descr = compare(current, old)
         if not args.target and not args.script:
