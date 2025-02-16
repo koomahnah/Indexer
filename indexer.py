@@ -588,7 +588,9 @@ def main():
             print("Overwrite old index? [y/N] ", end='')
             choice = input().lower()
             if choice == "y":
-                serialize_all(current, old_reversed, old_timestamps, args.directory, args.image_mode, prompt=False)
+                r = reverse_index(current)
+                t = stamp_times(r)
+                serialize_all(current, r, t, args.directory, args.image_mode, prompt=False)
             else:
                 print("Ok, not doing anything.")
     elif args.operation == "duplicate-info":
