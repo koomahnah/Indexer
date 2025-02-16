@@ -6,7 +6,11 @@ import numpy
 import imagehash
 from PIL import Image
 import json
+from tqdm import tqdm
+import time
+import colorlog
 
+logger = None
 def is_image(filename):
     f = str(filename).lower()
     return f.endswith('.png') or f.endswith('.jpg') or \
@@ -20,10 +24,10 @@ def sha1sum(file_path):
             while chunk := f.read(8192):  # Read the file in chunks (8192 bytes at a time)
                 sha1.update(chunk)
     except PermissionError as e:
-        print(f"Skipping inaccessible file {file_path} due to missing permissions. Error: {e}")
+        logger.error(f"Skipping inaccessible file {file_path} due to missing permissions. Error: {e}")
         return None
     except Exception as e:
-        print(f"Skipping inaccessible file {file_path} due to: {e}")
+        logger.error(f"Skipping inaccessible file {file_path} due to: {e}")
         return None
     return sha1.hexdigest()
 
@@ -62,11 +66,10 @@ def dhash(file_path):
 def index(dir, old_reversed, old_timestamps, image_mode, ignore_dir):
     path = Path(dir)
     if ignore_dir:
-        print(ignore_dir)
         ignore_dir = [Path(dir[0]) for dir in ignore_dir]
-        print(ignore_dir)
     dict = {}
-    for file_path in path.rglob('*'):  # '*' matches all files and directories
+    total = len(list(path.rglob('*')))
+    for file_path in tqdm(path.rglob('*'), desc="Indexing files", total=total):  # '*' matches all files and directories
         if ignore_dir:
             skip = False
             for dir in ignore_dir:
@@ -78,13 +81,16 @@ def index(dir, old_reversed, old_timestamps, image_mode, ignore_dir):
         if file_path.is_file():
             current_mod_time = file_path.stat().st_mtime
             if old_timestamps and old_reversed and str(file_path) in old_timestamps and current_mod_time == old_timestamps[str(file_path)]:
+                logger.debug(f"{file_path} was last modified at {current_mod_time}, what matches the index. Reusing checksum")
                 checksum = old_reversed[str(file_path)]
             else:
+                logger.debug(f"{file_path} was last modified at {current_mod_time}. Computing new checksum")
                 if image_mode and is_image(file_path):
                     try:
                         checksum = dhash(file_path)
+                        logger.debug(f"{file_path} checksums as image to {checksum}")
                     except Exception as e:
-                        print(f"Failed to compute image hash for {file_path}: {e}. \n Falling back to SHA.")
+                        logger.warning(f"Failed to compute image hash for {file_path}: {e}. \n Falling back to SHA.")
                         checksum = sha1sum(file_path)
                 else:
                     checksum = sha1sum(file_path)
@@ -127,7 +133,7 @@ def serialize_to_json(data, file_path, prompt=True):
     # Write the dictionary to a JSON file
     with path.open('w') as file:
         json.dump(data, file, indent=4)
-        print(f"INFO: Index successfully written to {file_path}.")
+        logger.info(f"Index successfully written to {file_path}")
 
 def deserialize_from_json(file_path):
     path = Path(file_path)
@@ -135,7 +141,7 @@ def deserialize_from_json(file_path):
 
     # Check if the file exists before attempting to read
     if not path.exists():
-        print(f"File {file_path} does not exist.")
+        logger.warning(f"File {file_path} does not exist.")
         return None
 
     # Read the JSON file and return the dictionary
@@ -143,7 +149,7 @@ def deserialize_from_json(file_path):
         with path.open('r') as file:
             out = json.load(file)
     except Exception as e:
-        print("Can't open the file: {e}")
+        logger.error("Can't open the file: {e}")
         return None
     
     if isinstance(out, dict):
@@ -157,29 +163,30 @@ def deserialize_from_json(file_path):
 def serialize_all(index, reverse_index, timestamp_index, dir, image_mode, prompt=True):
     sufix = ""
     if image_mode:
+        logger.info(f"Serializing image mode indexes")
         sufix = "_dhash"
     if index:
         serialize_to_json(index, dir + "/.index" + sufix, prompt)
+        logger.info(f"Serialized index with {len(index)} entries")
     if reverse_index:
         serialize_to_json(reverse_index, dir + "/.index_reversed" + sufix, prompt)
+        logger.info(f"Serialized reverse index with {len(reverse_index)} entries")
     if timestamp_index:
         serialize_to_json(timestamp_index, dir + "/.index_timestamps" + sufix, prompt)
+        logger.info(f"Serialized timestamps index with {len(timestamp_index)} entries")
 
 def deserialize_all(dir, image_mode):
     sufix = ""
     if image_mode:
+        logger.info(f"Deserializing image mode indexes")
         sufix = "_dhash"
     index = deserialize_from_json(dir + "/.index" + sufix)
     reverse_index = deserialize_from_json(dir + "/.index_reversed" + sufix)
     timestamp_index = deserialize_from_json(dir + "/.index_timestamps" + sufix)
+    logger.info(f"Deserialized index with {len(index)} entries")
+    logger.info(f"Deserialized reverse index with {len(reverse_index)} entries")
+    logger.info(f"Deserialized timestamps index with {len(timestamp_index)} entries")
     return index, reverse_index, timestamp_index
-
-
-DEBUG = True
-
-def debug_print(*args, **kwargs):
-    if DEBUG:
-        print(*args, **kwargs)
 
 # Return arrays current_stripped, old_stripped such that
 # every SHA:filename pair present in both current and old
@@ -340,7 +347,7 @@ def strip_copy_or_new(current, old, old_orig):
              5) old index is longer; intersection empty
              [f2, f3, f4...] -> [f1] <- this would also get flagged as move causing current to go empty XXX
             '''
-            print(f"This is a really unexpected case. There's same SHA in both old and current index. SHA {sha}, current[sha] {current[sha]}, old[sha] {old[sha]}")
+            logger.warning(f"This is a really unexpected case. There's same SHA in both old and current index. SHA {sha}, current[sha] {current[sha]}, old[sha] {old[sha]}")
             assert False
 
     # Recreate indexes without pairs listed in content_changes.
@@ -381,23 +388,24 @@ class ChangeDescription:
             f"  new: {self.new}\n"
         )
 
-def strip(current, old, debug=False):
+def strip(current, old):
+    debug = False
     change_descr = ChangeDescription()
     change_descr.current_stripped, change_descr.old_stripped = strip_unchanged(current, old)
-    if debug:
-        print("Stripped unchanged.", change_descr)
+    if (debug):
+        logger.debug(f"Stripped unchanged {change_descr}")
     change_descr.current_stripped, change_descr.old_stripped, change_descr.content_changes = strip_content_changes(change_descr.current_stripped, change_descr.old_stripped)
-    if debug:
-        print("Stripped content changes.", change_descr)
+    if (debug):
+        logger.debug(f"Stripped content changes {change_descr}")
     change_descr.current_stripped, change_descr.old_stripped, change_descr.moves = strip_moves(change_descr.current_stripped, change_descr.old_stripped)
-    if debug:
-        print("Stripped moves.", change_descr)
+    if (debug):
+        logger.debug(f"Stripped moves {change_descr}")
     change_descr.current_stripped, change_descr.old_stripped, change_descr.removals = strip_removal(change_descr.current_stripped, change_descr.old_stripped)
-    if debug:
-        print("Stripped removals.", change_descr)
+    if (debug):
+        logger.debug(f"Stripped removals {change_descr}")
     change_descr.current_stripped, change_descr.old_stripped, change_descr.copies, change_descr.new = strip_copy_or_new(change_descr.current_stripped, change_descr.old_stripped, old)
-    if debug:
-        print("Stripped copies and new.", change_descr)
+    if (debug):
+        logger.debug(f"Stripped copies and new {change_descr}")
     return change_descr
 
 def compare(current, old):
@@ -468,15 +476,15 @@ Index:
 """
 def b2_listing_to_index(b2_listing):
     index = {}
-    print(f"Converting b2 listing to an index...")
+    logger.info(f"Converting b2 listing to an index...")
     count = 0
     for file in b2_listing:
         if "contentSha1" not in file:
-            print("No contentSha1 in b2 listing:")
+            logger.warning("No contentSha1 in b2 listing:")
             print(file)
             continue
         if "fileName" not in file:
-            print("No contentSha1 in b2 listing:")
+            logger.warning("No contentSha1 in b2 listing:")
             print(file)
             continue
         sha = file["contentSha1"]
@@ -484,7 +492,7 @@ def b2_listing_to_index(b2_listing):
             try:
                 sha = file["fileInfo"]["large_file_sha1"]
             except Exception as e:
-                print(f"Failed to read SHA1 for {file['fileName']}: {e}")
+                logger.error(f"Failed to read SHA1 for {file['fileName']}: {e}")
                 continue
         path = file["fileName"]
         if sha in index:
@@ -492,7 +500,7 @@ def b2_listing_to_index(b2_listing):
         else:
             index[sha] = [path]
         count += 1
-    print(f"Done, {count} entries added.")
+    logger.info(f"Done, {count} entries added.")
     return index
 
 def list_duplicates(current, print_as_array):
@@ -508,6 +516,14 @@ def list_duplicates(current, print_as_array):
 
 change_descr = None
 def main():
+    global logger
+    logger = colorlog.getLogger(__name__)
+    handler = colorlog.StreamHandler()
+    formatter = colorlog.ColoredFormatter('%(log_color)s%(levelname)-8s%(reset)s %(white)s%(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(colorlog.INFO)
+
     parser = argparse.ArgumentParser(description="Indexing your files, and validating if you've lost anything.")
     subparsers = parser.add_subparsers(dest="operation", required=True, help="Operation to perform")
 
@@ -559,7 +575,7 @@ def main():
             old_reversed = deserialize_from_json(args.baseline + "_reversed")
             old_timestamps = deserialize_from_json(args.baseline + "_timestamps")
         else:
-            old, old_reversed, old_timestamps = deserialize_all(args.directory, args.image_mode);
+            old, old_reversed, old_timestamps = deserialize_all(args.directory, args.image_mode)
         if args.target:
             current = deserialize_from_json(args.target)
         else:
@@ -576,18 +592,9 @@ def main():
             else:
                 print("Ok, not doing anything.")
     elif args.operation == "duplicate-info":
-        old_reversed = deserialize_from_json(args.directory + "/.index_reversed")
-        old_timestamps = deserialize_from_json(args.directory + "/.index_timestamps")
-        if old_reversed:
-            print(f"INFO: Loaded reverse index with {len(old_reversed)} entries.")
-        else:
-            print("INFO: Reverse index missing.")
-        if old_timestamps:
-            print(f"INFO: Loaded timestamps index with {len(old_timestamps)} entries.")
-        else:
-            print("INFO: timestamps index missing.")
-        current = index(args.directory, old_reversed, old_timestamps, args.image_mode, args.ignore_dir)
-        list_duplicates(current, args.print_as_array)
+        logger.warning("Listing duplicates based on existing index! Current directory may be different. Confirm with 'validate' if you like.")
+        old, old_reversed, old_timestamps = deserialize_all(args.directory, args.image_mode)
+        list_duplicates(old, args.print_as_array)
 
 
 if __name__ == "__main__":
